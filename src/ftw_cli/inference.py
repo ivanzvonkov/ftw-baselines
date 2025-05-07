@@ -77,6 +77,7 @@ def run(input, model, out, resize_factor, gpu, patch_size, batch_size, padding, 
 
     # Run inference
     output_mask = np.zeros((input_height, input_width), dtype=np.uint8)
+    output_pred = np.zeros((input_height, input_width), dtype=np.uint8)
     dl_enumerator = tqdm(dataloader)
 
     for batch in dl_enumerator:
@@ -90,8 +91,9 @@ def run(input, model, out, resize_factor, gpu, patch_size, batch_size, padding, 
             bboxes = batch["bbox"]
 
         with torch.inference_mode():
-            predictions = model(images)
-            predictions = predictions.argmax(axis=1).unsqueeze(0)
+            predictions_float = model(images)
+            predictions = predictions_float.argmax(axis=1).unsqueeze(0)
+            predictions_float = down_sample(predictions_float.float()).cpu().numpy()[0]
             predictions = down_sample(predictions.float()).int().cpu().numpy()[0]
 
         for i in range(len(bboxes)):
@@ -105,7 +107,9 @@ def run(input, model, out, resize_factor, gpu, patch_size, batch_size, padding, 
             pbottom = bottom - padding
             destination_height, destination_width = output_mask[ptop:pbottom, pleft:pright].shape
             inp = predictions[i][padding:padding + destination_height, padding:padding + destination_width]
+            inp_float = predictions_float[i][padding:padding + destination_height, padding:padding + destination_width]
             output_mask[ptop:pbottom, pleft:pright] = inp
+            output_pred[ptop:pbottom, pleft:pright] = inp_float
 
     # Save predictions
     profile.update({
@@ -125,5 +129,12 @@ def run(input, model, out, resize_factor, gpu, patch_size, batch_size, padding, 
         dst.write_colormap(1, {1: (255, 0, 0), 2:(0, 255, 0)})
         dst.colorinterp = [ColorInterp.palette]
         dst.write(output_mask, 1)
+
+    out_logits = out.replace(".tif", "_logits.tif")
+    with rasterio.open(out_logits, "w", **profile) as dst:
+        dst.update_tags(**tags)
+        dst.write_colormap(1, {1: (255, 0, 0), 2:(0, 255, 0)})
+        dst.colorinterp = [ColorInterp.palette]
+        dst.write(output_pred, 1)
 
     print(f"Finished inference and saved output to {out} in {time.time() - tic:.2f}s")
